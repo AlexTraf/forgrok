@@ -21,7 +21,7 @@ from telethon.tl.functions.photos import UploadProfilePhotoRequest, DeletePhotos
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.errors import FloodWaitError, ForbiddenError, UsernameOccupiedError
 from config import (
-    rootLogger, write_daily_log, bot, dp, chat_id, owner_id, selected_company, sessions,
+    rootLogger, bot, dp, chat_id, owner_id, selected_company, sessions,
     company_configs, company_active, liking_tasks, kb_menu, kb_change_settings,
     kb_company_config, kb_all_or_select, kb_add_users, CompanyToggleState, AddChatsState,
     BlacklistState, SendPMState, CollectViewsStatsState, CreateCompanyState,
@@ -30,7 +30,7 @@ from config import (
 )
 from database import conn, cursor
 from sessions import Session, make_client, activate_session, check_session_status, move_to_banned, move_to_spamblocked
-from utils import get_stats_text, get_all_stats, make_stat_str, create_companies_keyboard
+from utils import write_daily_log, get_stats_text, get_all_stats, make_stat_str, create_companies_keyboard
 from workers import worker_liking_stories, update_stats_message
 
 async def create_channel_for_accounts(data, message, state):
@@ -470,6 +470,7 @@ async def add_sessions(company, zip_path):
                 target_path = os.path.join(sessions_dir, filename)
                 shutil.move(session_path, target_path)
                 rootLogger.info(f"Добавлена сессия {filename} для компании {company}")
+                write_daily_log(f"Добавлена сессия {filename} для компании {company}")
                 session_number = filename.replace('.session', '')
                 json_filename = f"{session_number}.json"
                 json_path = os.path.join(temp_dir, json_filename)
@@ -477,12 +478,16 @@ async def add_sessions(company, zip_path):
                     target_json_path = os.path.join(sessions_dir, json_filename)
                     shutil.move(json_path, target_json_path)
                     rootLogger.info(f"Добавлен JSON-файл {json_filename} для сессии {session_number}")
+                    write_daily_log(f"Добавлен JSON-файл {json_filename} для сессии {session_number}")
     finally:
         try:
             shutil.rmtree(temp_dir)
         except Exception as e:
             rootLogger.error(f"Ошибка при удалении временной папки {temp_dir}: {str(e)}")
+            write_daily_log(f"Ошибка при удалении временной папки {temp_dir}: {str(e)}")
 
+
+@dp.message(F.from_user.id == owner_id, F.text == "/start")
 async def start(message: atypes.Message):
     global selected_company
     log_msg = f"Запуск команды /start. Текущая компания: {selected_company}"
@@ -500,7 +505,7 @@ async def start(message: atypes.Message):
                   [atypes.InlineKeyboardButton(text="Статистика аккаунтов", callback_data="account_stats")]])
         await message.reply("Чтобы начать работу, выберите компанию:", reply_markup=kb_companies)
     else:
-        await message.reply("Выберите действие ниже:", reply_markup=kb_menu)
+        await back_to_menu(message)
 
 @dp.message((F.from_user.id == owner_id) & (F.text == "/stats_all"))
 async def stats_all(message: atypes.Message):
@@ -541,6 +546,7 @@ async def process_usernames(message: atypes.Message, state: FSMContext):
         if cursor.rowcount > 0:
             added_count += 1
             rootLogger.info(f"Добавлен пользователь @{username} в чёрный список для компании {company}")
+            write_daily_log(f"Добавлен пользователь @{username} в чёрный список для компании {company}")
     conn.commit()
     await message.reply(f"Добавлено {added_count} пользователей в чёрный список компании {company}.")
     await state.clear()
@@ -594,6 +600,7 @@ async def add_chats_file(message: atypes.Message, state: FSMContext):
                         added_count += 1
                 except Exception as e:
                     rootLogger.error(f"Ошибка добавления канала {chat} в базу: {str(e)}")
+                    write_daily_log(f"Ошибка добавления канала {chat} в базу: {str(e)}")
     conn.commit()
     await state.clear()
     await message.reply(f"Добавлено {added_count} новых чатов/каналов в компанию {company}")
@@ -714,6 +721,7 @@ async def add_zip_sessions(message: atypes.Message, state: FSMContext):
                 if os.path.exists(json_path):
                     os.remove(json_path)
                     rootLogger.info(f"Удалён JSON-файл {session.filename.replace('.session', '.json')} для неактивированной сессии")
+                    write_daily_log(f"Удалён JSON-файл {session.filename.replace('.session', '.json')} для неактивированной сессии")
                 new_sessions.remove(session)
         sessions.extend(new_sessions)
         if counter == 0:
@@ -732,6 +740,7 @@ async def add_zip_sessions(message: atypes.Message, state: FSMContext):
                 os.remove(temp_zip_path)
             except Exception as e:
                 rootLogger.error(f"Ошибка при удалении временного файла {temp_zip_path}: {str(e)}")
+                write_daily_log(f"Ошибка при удалении временного файла {temp_zip_path}: {str(e)}")
 
 @dp.callback_query((F.from_user.id == owner_id) & (F.data == "add_chats"))
 async def start_add_chats(callback: atypes.CallbackQuery, state: FSMContext):
@@ -868,12 +877,14 @@ async def done_toggling(callback: atypes.CallbackQuery, state: FSMContext):
             task.cancel()
             liking_tasks.remove((task, session))
             rootLogger.info(f"Задача лайкинга для {session.filename} отменена")
+            write_daily_log(f"Задача лайкинга для {session.filename} отменена")
     for session in sessions:
         if company_active.get(session.company, False) and session.me:
             if not any(t[1] == session for t in liking_tasks):
                 task = asyncio.create_task(worker_liking_stories(session))
                 liking_tasks.append((task, session))
                 rootLogger.info(f"Запущена задача лайкинга для {session.filename}")
+                write_daily_log(f"Запущена задача лайкинга для {session.filename}")
     await state.clear()
     await callback.message.edit_text("Настройки лайкинга обновлены.")
     await start(callback.message)
@@ -886,12 +897,13 @@ async def account_stat(callback: atypes.CallbackQuery):
         list(map(lambda x: x.filename, list(filter(lambda x: x.me is None, sessions)))))]
     await callback.message.edit_text("\n".join(text))
 
-@dp.callback_query((F.from_user.id == owner_id) & (F.data == "create_company"))
+@dp.callback_query(F.from_user.id == owner_id, F.data == "create_company")
 async def create_company(callback: atypes.CallbackQuery, state: FSMContext):
     await state.set_state(CreateCompanyState.name)
     await callback.message.edit_text("Напишите имя компании")
+    await callback.answer()
 
-@dp.message(CreateCompanyState.name, (F.from_user.id == owner_id))
+@dp.message(CreateCompanyState.name, F.from_user.id == owner_id)
 async def set_name(message: atypes.Message, state: FSMContext):
     global selected_company
     await state.clear()
@@ -917,17 +929,17 @@ async def set_name(message: atypes.Message, state: FSMContext):
             "unique_users_with_stories": []
         }, f, ensure_ascii=False)
     await message.reply("Компания создана, добавьте сессии и каналы")
-    await start(message)
+    await back_to_menu(message)
 
-@dp.callback_query((F.from_user.id == owner_id) & (F.data.startswith("sel_company_")))
-async def switch_company(callback: atypes.CallbackQuery, company: str):
+@dp.callback_query(F.from_user.id == owner_id, F.data.startswith("sel_company_"))
+async def switch_company(callback: atypes.CallbackQuery):
     global selected_company
-    selected_company = company
-    stats_file = f"./companies/{company}/company_stats.json"
+    selected_company = callback.data.replace("sel_company_", "")
+    stats_file = f"./companies/{selected_company}/company_stats.json"
     if os.path.exists(stats_file):
         with open(stats_file, "r", encoding='utf-8') as f:
             stats = json.load(f)
-            company_stats[company] = {
+            company_stats[selected_company] = {
                 "stories_viewed": stats.get("stories_viewed", 0),
                 "likes_set": stats.get("likes_set", 0),
                 "unique_users": set(stats.get("unique_users", [])),
@@ -936,7 +948,7 @@ async def switch_company(callback: atypes.CallbackQuery, company: str):
                 "unique_users_with_stories": set(stats.get("unique_users_with_stories", []))
             }
     else:
-        company_stats[company] = {
+        company_stats[selected_company] = {
             "stories_viewed": 0,
             "likes_set": 0,
             "unique_users": set(),
@@ -944,8 +956,8 @@ async def switch_company(callback: atypes.CallbackQuery, company: str):
             "chats_processed": 0,
             "unique_users_with_stories": set()
         }
-    await callback.message.edit_text(f"Вы переключились на компанию: {company}")
-    await callback.answer()
+    await callback.message.edit_text(f"Вы переключились на компанию: {selected_company}")
+    await back_to_menu(callback)
 
 @dp.callback_query((F.from_user.id == owner_id) & (F.data == "change_company"))
 async def change_company(callback: atypes.CallbackQuery):
@@ -953,8 +965,8 @@ async def change_company(callback: atypes.CallbackQuery):
     selected_company = None
     kb_companies = atypes.InlineKeyboardMarkup(inline_keyboard=list(
         map(lambda x: [atypes.InlineKeyboardButton(text=x, callback_data="sel_company_" + x)],
-            list(listdir("./companies"))
-        )) + [[atypes.InlineKeyboardButton(text="Создать компанию", callback_data="create_company")]])
+            listdir("./companies"))
+        ) + [[atypes.InlineKeyboardButton(text="Создать компанию", callback_data="create_company")]])
     await callback.message.edit_text("Выберите компанию:", reply_markup=kb_companies)
     await callback.answer()
 
@@ -1084,51 +1096,59 @@ async def sel_acc(callback: atypes.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Произошла критическая ошибка.")
     await callback.answer()
 
-@dp.callback_query((F.from_user.id == owner_id) & (F.data == "back_to_start"))
-async def back_to_start(callback: atypes.CallbackQuery):
-    global selected_company
-    if selected_company is None:
-        kb_companies = atypes.InlineKeyboardMarkup(inline_keyboard=[
-            *[atypes.InlineKeyboardButton(text=x, callback_data="sel_company_" + x) for x in listdir("./companies")],
-            [atypes.InlineKeyboardButton(text="Создать компанию", callback_data="create_company")],
-            [atypes.InlineKeyboardButton(text="Статистика аккаунтов", callback_data="account_stats")]
-        ])
-        await callback.message.edit_text("Выберите компанию:", reply_markup=kb_companies)
-    else:
-        async with stats_lock:
-            stats_text = (
-                f"Сторис просмотрено: {company_stats[selected_company]['stories_viewed']}\n"
-                f"Лайков поставлено: {company_stats[selected_company]['likes_set']}\n"
-                f"Уникальных пользователей открыто: {len(company_stats[selected_company]['unique_users'])}\n"
-                f"Уникальных пользователей со сторисами: {len(company_stats[selected_company]['unique_users_with_stories'])}\n"
-                f"Каналов пройдено: {company_stats[selected_company]['channels_processed']}\n"
-                f"Чатов пройдено: {company_stats[selected_company]['chats_processed']}\n\n"
-                "Выберите действие ниже:"
-            )
-        msg = await callback.message.edit_text(stats_text, reply_markup=kb_menu)
-        asyncio.create_task(update_stats_message(msg.chat.id, msg.message_id, selected_company))
-    await callback.answer()
-
-@dp.callback_query((F.from_user.id == owner_id) & (F.data == "back_to_menu"))
-async def back_to_menu(callback: atypes.CallbackQuery):
-    async with stats_lock:
-        stats_text = (
-            f"Сторис просмотрено: {company_stats[selected_company]['stories_viewed']}\n"
-            f"Лайков поставлено: {company_stats[selected_company]['likes_set']}\n"
-            f"Уникальных пользователей открыто: {len(company_stats[selected_company]['unique_users'])}\n"
-            f"Уникальных пользователей со сторисами: {len(company_stats[selected_company]['unique_users_with_stories'])}\n"
-            f"Каналов пройдено: {company_stats[selected_company]['channels_processed']}\n"
-            f"Чатов пройдено: {company_stats[selected_company]['chats_processed']}\n\n"
-            "Выберите действие ниже:"
-        )
-    msg = await callback.message.edit_text(stats_text, reply_markup=kb_menu)
-    asyncio.create_task(update_stats_message(msg.chat.id, msg.message_id, selected_company))
-    await callback.answer()
+@dp.callback_query(F.from_user.id == owner_id, F.data == "back_to_menu")
+async def back_to_menu(event):  # Изменяем на event для универсальности
+    if isinstance(event, atypes.CallbackQuery):
+        callback = event
+        if selected_company is None:
+            kb_companies = atypes.InlineKeyboardMarkup(inline_keyboard=[
+                *[atypes.InlineKeyboardButton(text=x, callback_data="sel_company_" + x) for x in listdir("./companies")],
+                [atypes.InlineKeyboardButton(text="Создать компанию", callback_data="create_company")],
+                [atypes.InlineKeyboardButton(text="Статистика аккаунтов", callback_data="account_stats")]
+            ])
+            await callback.message.edit_text("Выберите компанию:", reply_markup=kb_companies)
+        else:
+            async with stats_lock:
+                stats_text = f"Активная компания: {selected_company}\n"
+                stats_text += (
+                    f"Сторис просмотрено: {company_stats[selected_company]['stories_viewed']}\n"
+                    f"Лайков поставлено: {company_stats[selected_company]['likes_set']}\n"
+                    f"Уникальных пользователей открыто: {len(company_stats[selected_company]['unique_users'])}\n"
+                    f"Уникальных пользователей со сторисами: {len(company_stats[selected_company]['unique_users_with_stories'])}\n"
+                    f"Каналов пройдено: {company_stats[selected_company]['channels_processed']}\n"
+                    f"Чатов пройдено: {company_stats[selected_company]['chats_processed']}\n\n"
+                    "Выберите действие ниже:"
+                )
+            msg = await callback.message.edit_text(stats_text, reply_markup=kb_menu)
+            asyncio.create_task(update_stats_message(msg.chat.id, msg.message_id, selected_company))
+        await callback.answer()
+    elif isinstance(event, atypes.Message):
+        message = event
+        if selected_company is None:
+            kb_companies = atypes.InlineKeyboardMarkup(inline_keyboard=list(
+                map(lambda x: [atypes.InlineKeyboardButton(text=x, callback_data="sel_company_" + x)],
+                    list(listdir("./companies"))
+                )) + [[atypes.InlineKeyboardButton(text="Создать компанию", callback_data="create_company")],
+                      [atypes.InlineKeyboardButton(text="Статистика аккаунтов", callback_data="account_stats")]])
+            await message.reply("Чтобы начать работу, выберите компанию:", reply_markup=kb_companies)
+        else:
+            async with stats_lock:
+                stats_text = f"Активная компания: {selected_company}\n"
+                stats_text += (
+                    f"Сторис просмотрено: {company_stats[selected_company]['stories_viewed']}\n"
+                    f"Лайков поставлено: {company_stats[selected_company]['likes_set']}\n"
+                    f"Уникальных пользователей открыто: {len(company_stats[selected_company]['unique_users'])}\n"
+                    f"Уникальных пользователей со сторисами: {len(company_stats[selected_company]['unique_users_with_stories'])}\n"
+                    f"Каналов пройдено: {company_stats[selected_company]['channels_processed']}\n"
+                    f"Чатов пройдено: {company_stats[selected_company]['chats_processed']}\n\n"
+                    "Выберите действие ниже:"
+                )
+            await message.reply(stats_text, reply_markup=kb_menu)
 
 @dp.callback_query((F.from_user.id == owner_id) & (F.data == "back_to_change"))
 async def back_to_change(callback: atypes.CallbackQuery):
     async with stats_lock:
-        stats_text = get_stats_text(selected_company)
+        stats_text = await get_stats_text(selected_company)
     msg = await callback.message.edit_text(stats_text, reply_markup=kb_change_settings)
     asyncio.create_task(update_stats_message(msg.chat.id, msg.message_id, selected_company))
     await callback.answer()
@@ -1171,33 +1191,11 @@ async def cancel_blacklist(callback: atypes.CallbackQuery, state: FSMContext):
     await callback.answer()
     await start(callback.message)
 
-@dp.callback_query((F.from_user.id == owner_id) & (F.data.startswith("select_company_")))
-async def switch_company(callback: atypes.CallbackQuery, company: str):
-    global selected_company
-    selected_company = company
-    stats_file = f"./companies/{company}/company_stats.json"
-    if os.path.exists(stats_file):
-        with open(stats_file, "r", encoding='utf-8') as f:
-            stats = json.load(f)
-            company_stats[company] = {
-                "stories_viewed": stats.get("stories_viewed", 0),
-                "likes_set": stats.get("likes_set", 0),
-                "unique_users": set(stats.get("unique_users", [])),
-                "channels_processed": stats.get("channels_processed", 0),
-                "chats_processed": stats.get("chats_processed", 0),
-                "unique_users_with_stories": set(stats.get("unique_users_with_stories", []))
-            }
-    else:
-        company_stats[company] = {
-            "stories_viewed": 0,
-            "likes_set": 0,
-            "unique_users": set(),
-            "channels_processed": 0,
-            "chats_processed": 0,
-            "unique_users_with_stories": set()
-        }
-    await callback.message.edit_text(f"Вы переключились на компанию: {company}")
-    await callback.answer()
+@dp.message()
+async def debug_all_messages(message: atypes.Message):
+    print(f"DEBUG: Получено сообщение от {message.from_user.id}: {message.text}")
+    await message.reply(f"DEBUG: Получено сообщение: {message.text}. Твой ID: {message.from_user.id}, owner_id: {owner_id}")
+
 
 @dp.callback_query(AddPrivateChannelState.confirm, (F.from_user.id == owner_id) & (F.data == "confirm_create"))
 async def confirm_create_channel(callback: atypes.CallbackQuery, state: FSMContext):
